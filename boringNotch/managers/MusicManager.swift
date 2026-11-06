@@ -410,10 +410,84 @@ class MusicManager: ObservableObject {
             .replacingOccurrences(of: "\u{FFFD}", with: "")
     }
 
+    private func fetchLyricsFromQQMusic(title: String, artist: String) async -> (plain: String, synced: [(Double, String)])? {
+        let strippedTitle = title.replacingOccurrences(of: #"\s*[\(\[（【].*?[\)\]）】]"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+        let primaryArtist = artist.components(separatedBy: CharacterSet(charactersIn: "/,&、")).first?.trimmingCharacters(in: .whitespaces) ?? artist
+        let queries = [
+            "\(title) \(artist)",
+            "\(strippedTitle) \(primaryArtist)",
+            title
+        ]
+
+        for q in queries {
+            guard let encQuery = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                  let searchURL = URL(string: "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=3&w=\(encQuery)&format=json") else {
+                continue
+            }
+
+            var searchReq = URLRequest(url: searchURL)
+            searchReq.setValue("https://y.qq.com/", forHTTPHeaderField: "Referer")
+            searchReq.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+            searchReq.timeoutInterval = 4.0
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: searchReq)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { continue }
+
+                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let d = json["data"] as? [String: Any],
+                      let song = d["song"] as? [String: Any],
+                      let list = song["list"] as? [[String: Any]],
+                      let first = list.first,
+                      let songmid = first["songmid"] as? String, !songmid.isEmpty else {
+                    continue
+                }
+
+                guard let lyricURL = URL(string: "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json&nobase64=1") else {
+                    continue
+                }
+
+                var lyricReq = URLRequest(url: lyricURL)
+                lyricReq.setValue("https://y.qq.com/", forHTTPHeaderField: "Referer")
+                lyricReq.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+                lyricReq.timeoutInterval = 4.0
+
+                let (lyricData, lyricResp) = try await URLSession.shared.data(for: lyricReq)
+                guard let lyricHttp = lyricResp as? HTTPURLResponse, lyricHttp.statusCode == 200 else { continue }
+
+                if let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
+                   let rawLrc = lyricJson["lyric"] as? String, !rawLrc.isEmpty {
+                    let cleanLrc = rawLrc
+                        .replacingOccurrences(of: "&#10;", with: "\n")
+                        .replacingOccurrences(of: "&#32;", with: " ")
+                        .replacingOccurrences(of: "&#58;", with: ":")
+                        .replacingOccurrences(of: "&apos;", with: "'")
+                        .replacingOccurrences(of: "&quot;", with: "\"")
+                    let parsed = self.parseLRC(cleanLrc)
+                    if !parsed.isEmpty {
+                        return (plain: cleanLrc, synced: parsed)
+                    }
+                }
+            } catch {
+                continue
+            }
+        }
+        return nil
+    }
+
     @MainActor
     private func fetchLyricsFromWeb(title: String, artist: String) async {
         let cleanTitle = normalizedQuery(title)
         let cleanArtist = normalizedQuery(artist)
+
+        // 1. Prioritize QQ Music's native lyrics API for domestic/Chinese music
+        if let qqResult = await self.fetchLyricsFromQQMusic(title: cleanTitle, artist: cleanArtist) {
+            self.currentLyrics = qqResult.plain
+            self.syncedLyrics = qqResult.synced
+            self.isFetchingLyrics = false
+            return
+        }
+
         guard let encodedTitle = cleanTitle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let encodedArtist = cleanArtist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
             self.currentLyrics = ""
