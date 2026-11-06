@@ -23,6 +23,7 @@ struct ContentView: View {
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var brightnessManager = BrightnessManager.shared
     @ObservedObject var volumeManager = VolumeManager.shared
+    @Default(.showClosedNotchLyrics) var showClosedNotchLyrics
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
@@ -69,11 +70,11 @@ struct ContentView: View {
             && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle)
             && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed
         {
-            var extraWidth: CGFloat = 2 * max(0, vm.effectiveClosedNotchHeight - 12) + 20
-            if Defaults[.showClosedNotchLyrics] && !musicManager.syncedLyrics.isEmpty {
-                extraWidth += 272
-            }
-            chinWidth += extraWidth
+            let isInlineSneakPeek = coordinator.expandingView.show && coordinator.expandingView.type == .music && Defaults[.sneakPeekStyles] == .inline
+            let baseWidth: CGFloat = isInlineSneakPeek ? 380 : vm.closedNotchSize.width
+            let wingsWidth: CGFloat = 2 * max(0, vm.effectiveClosedNotchHeight - 12) + 20
+            let lyricsExtra: CGFloat = (showClosedNotchLyrics && !musicManager.syncedLyrics.isEmpty) ? 272 : 0
+            chinWidth = baseWidth + wingsWidth + lyricsExtra
         } else if !coordinator.expandingView.show && vm.notchState == .closed
             && (!musicManager.isPlaying && musicManager.isPlayerIdle) && Defaults[.showNotHumanFace]
             && !vm.hideOnClosed
@@ -391,7 +392,7 @@ struct ContentView: View {
 
     @ViewBuilder
     func MusicLiveActivity() -> some View {
-        let showLyrics = Defaults[.showClosedNotchLyrics] && !musicManager.syncedLyrics.isEmpty
+        let hasLyrics = showClosedNotchLyrics && !musicManager.syncedLyrics.isEmpty
         let iconSize = max(0, vm.effectiveClosedNotchHeight - 12)
         let lyricTrackWidth: CGFloat = 130
 
@@ -411,22 +412,17 @@ struct ContentView: View {
                         height: iconSize
                     )
 
-                if showLyrics {
-                    MarqueeText(
-                        .constant(musicManager.songTitle),
-                        font: .system(size: 11.5, weight: .medium, design: .rounded),
-                        textColor: Defaults[.coloredSpectrogram]
-                            ? Color(nsColor: musicManager.avgColor).ensureMinimumBrightness(factor: 0.7)
-                            : Color.white.opacity(0.85),
-                        minDuration: 1.0,
-                        frameWidth: lyricTrackWidth
-                    )
-                    .lineLimit(1)
-                    .frame(width: lyricTrackWidth, alignment: .trailing)
-                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                if hasLyrics {
+                    Text(musicManager.songTitle)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(Color.white.opacity(0.85))
+                        .frame(width: lyricTrackWidth, alignment: .trailing)
+                        .transition(.opacity.combined(with: .scale(scale: 0.85)))
                 }
             }
-            .frame(width: iconSize + (showLyrics ? lyricTrackWidth + 6 : 0), alignment: .trailing)
+            .frame(width: iconSize + (hasLyrics ? lyricTrackWidth + 6 : 0), alignment: .trailing)
 
             Rectangle()
                 .fill(.black)
@@ -435,28 +431,23 @@ struct ContentView: View {
                         if coordinator.expandingView.show
                             && coordinator.expandingView.type == .music
                         {
-                            MarqueeText(
-                                .constant(musicManager.songTitle),
-                                textColor: Defaults[.coloredSpectrogram]
-                                    ? Color(nsColor: musicManager.avgColor) : Color.gray,
-                                minDuration: 0.4,
-                                frameWidth: 100
-                            )
-                            .opacity(
-                                (coordinator.expandingView.show
-                                    && Defaults[.sneakPeekStyles] == .inline)
-                                    ? 1 : 0
-                            )
+                            Text(musicManager.songTitle)
+                                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .foregroundStyle(Color.white)
+                                .opacity(
+                                    (coordinator.expandingView.show
+                                        && Defaults[.sneakPeekStyles] == .inline)
+                                        ? 1 : 0
+                                )
                             Spacer(minLength: vm.closedNotchSize.width)
                             // Song Artist
                             Text(musicManager.artistName)
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
                                 .lineLimit(1)
                                 .truncationMode(.tail)
-                                .foregroundStyle(
-                                    Defaults[.coloredSpectrogram]
-                                        ? Color(nsColor: musicManager.avgColor)
-                                        : Color.gray
-                                )
+                                .foregroundStyle(Color.gray)
                                 .opacity(
                                     (coordinator.expandingView.show
                                         && coordinator.expandingView.type == .music
@@ -477,28 +468,26 @@ struct ContentView: View {
 
             // Right wing: Live Synced Lyric + Audio Spectrum
             HStack(spacing: 6) {
-                if showLyrics {
-                    TimelineView(.animation(minimumInterval: 0.25)) { timeline in
+                if hasLyrics {
+                    TimelineView(.animation(minimumInterval: 0.2)) { timeline in
                         let currentElapsed: Double = {
                             guard musicManager.isPlaying else { return musicManager.elapsedTime }
                             let delta = timeline.date.timeIntervalSince(musicManager.timestampDate)
                             let progressed = musicManager.elapsedTime + (delta * musicManager.playbackRate)
                             return min(max(progressed, 0), musicManager.songDuration)
                         }()
-                        let line = musicManager.lyricLine(at: currentElapsed)
-                        MarqueeText(
-                            .constant(line.isEmpty ? musicManager.artistName : line),
-                            font: .system(size: 11.5, weight: .semibold, design: .rounded),
-                            textColor: Defaults[.coloredSpectrogram]
-                                ? Color(nsColor: musicManager.avgColor).ensureMinimumBrightness(factor: 0.85)
-                                : Color.white,
-                            minDuration: 1.0,
-                            frameWidth: lyricTrackWidth
-                        )
-                        .lineLimit(1)
-                        .frame(width: lyricTrackWidth, alignment: .leading)
+                        let rawLine = musicManager.lyricLine(at: currentElapsed)
+                        let displayLine = rawLine.isEmpty ? musicManager.artistName : rawLine
+                        Text(displayLine)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .foregroundStyle(Color.white)
+                            .frame(width: lyricTrackWidth, alignment: .leading)
+                            .id(displayLine)
+                            .animation(.easeInOut(duration: 0.25), value: displayLine)
                     }
-                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
                 }
 
                 HStack {
@@ -533,7 +522,7 @@ struct ContentView: View {
                     alignment: .center
                 )
             }
-            .frame(width: iconSize + (showLyrics ? lyricTrackWidth + 6 : 0), alignment: .leading)
+            .frame(width: iconSize + (hasLyrics ? lyricTrackWidth + 6 : 0), alignment: .leading)
         }
         .frame(
             height: vm.effectiveClosedNotchHeight,
