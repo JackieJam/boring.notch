@@ -69,7 +69,11 @@ struct ContentView: View {
             && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle)
             && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed
         {
-            chinWidth += (2 * max(0, vm.effectiveClosedNotchHeight - 12) + 20)
+            var extraWidth: CGFloat = 2 * max(0, vm.effectiveClosedNotchHeight - 12) + 20
+            if Defaults[.showClosedNotchLyrics] && !musicManager.syncedLyrics.isEmpty {
+                extraWidth += 272
+            }
+            chinWidth += extraWidth
         } else if !coordinator.expandingView.show && vm.notchState == .closed
             && (!musicManager.isPlaying && musicManager.isPlayerIdle) && Defaults[.showNotHumanFace]
             && !vm.hideOnClosed
@@ -387,19 +391,42 @@ struct ContentView: View {
 
     @ViewBuilder
     func MusicLiveActivity() -> some View {
-        HStack {
-            Image(nsImage: musicManager.albumArt)
-                .resizable()
-                .clipped()
-                .clipShape(
-                    RoundedRectangle(
-                        cornerRadius: MusicPlayerImageSizes.cornerRadiusInset.closed)
-                )
-                .matchedGeometryEffect(id: "albumArt", in: albumArtNamespace)
-                .frame(
-                    width: max(0, vm.effectiveClosedNotchHeight - 12),
-                    height: max(0, vm.effectiveClosedNotchHeight - 12)
-                )
+        let showLyrics = Defaults[.showClosedNotchLyrics] && !musicManager.syncedLyrics.isEmpty
+        let iconSize = max(0, vm.effectiveClosedNotchHeight - 12)
+        let lyricTrackWidth: CGFloat = 130
+
+        HStack(spacing: 6) {
+            // Left wing: Album Art + Song Title
+            HStack(spacing: 6) {
+                Image(nsImage: musicManager.albumArt)
+                    .resizable()
+                    .clipped()
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: MusicPlayerImageSizes.cornerRadiusInset.closed)
+                    )
+                    .matchedGeometryEffect(id: "albumArt", in: albumArtNamespace)
+                    .frame(
+                        width: iconSize,
+                        height: iconSize
+                    )
+
+                if showLyrics {
+                    MarqueeText(
+                        .constant(musicManager.songTitle),
+                        font: .system(size: 11.5, weight: .medium, design: .rounded),
+                        textColor: Defaults[.coloredSpectrogram]
+                            ? Color(nsColor: musicManager.avgColor).ensureMinimumBrightness(factor: 0.7)
+                            : Color.white.opacity(0.85),
+                        minDuration: 1.0,
+                        frameWidth: lyricTrackWidth
+                    )
+                    .lineLimit(1)
+                    .frame(width: lyricTrackWidth, alignment: .trailing)
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                }
+            }
+            .frame(width: iconSize + (showLyrics ? lyricTrackWidth + 6 : 0), alignment: .trailing)
 
             Rectangle()
                 .fill(.black)
@@ -448,37 +475,65 @@ struct ContentView: View {
                             + -cornerRadiusInsets.closed.top
                 )
 
-            HStack {
-                if useMusicVisualizer {
-                    Rectangle()
-                        .fill(
-                            Defaults[.coloredSpectrogram]
-                                ? Color(nsColor: musicManager.avgColor).gradient
-                                : Color.gray.gradient
+            // Right wing: Live Synced Lyric + Audio Spectrum
+            HStack(spacing: 6) {
+                if showLyrics {
+                    TimelineView(.animation(minimumInterval: 0.25)) { timeline in
+                        let currentElapsed: Double = {
+                            guard musicManager.isPlaying else { return musicManager.elapsedTime }
+                            let delta = timeline.date.timeIntervalSince(musicManager.timestampDate)
+                            let progressed = musicManager.elapsedTime + (delta * musicManager.playbackRate)
+                            return min(max(progressed, 0), musicManager.songDuration)
+                        }()
+                        let line = musicManager.lyricLine(at: currentElapsed)
+                        MarqueeText(
+                            .constant(line.isEmpty ? musicManager.artistName : line),
+                            font: .system(size: 11.5, weight: .semibold, design: .rounded),
+                            textColor: Defaults[.coloredSpectrogram]
+                                ? Color(nsColor: musicManager.avgColor).ensureMinimumBrightness(factor: 0.85)
+                                : Color.white,
+                            minDuration: 1.0,
+                            frameWidth: lyricTrackWidth
                         )
-                        .frame(width: 50, alignment: .center)
-                        .matchedGeometryEffect(id: "spectrum", in: albumArtNamespace)
-                        .mask {
-                            AudioSpectrumView(isPlaying: $musicManager.isPlaying)
-                                .frame(width: 16, height: 12)
-                        }
-                } else {
-                    LottieAnimationContainer()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .lineLimit(1)
+                        .frame(width: lyricTrackWidth, alignment: .leading)
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
                 }
+
+                HStack {
+                    if useMusicVisualizer {
+                        Rectangle()
+                            .fill(
+                                Defaults[.coloredSpectrogram]
+                                    ? Color(nsColor: musicManager.avgColor).gradient
+                                    : Color.gray.gradient
+                            )
+                            .frame(width: 50, alignment: .center)
+                            .matchedGeometryEffect(id: "spectrum", in: albumArtNamespace)
+                            .mask {
+                                AudioSpectrumView(isPlaying: $musicManager.isPlaying)
+                                    .frame(width: 16, height: 12)
+                            }
+                    } else {
+                        LottieAnimationContainer()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .frame(
+                    width: max(
+                        0,
+                        iconSize
+                            + gestureProgress / 2
+                    ),
+                    height: max(
+                        0,
+                        iconSize
+                    ),
+                    alignment: .center
+                )
             }
-            .frame(
-                width: max(
-                    0,
-                    vm.effectiveClosedNotchHeight - 12
-                        + gestureProgress / 2
-                ),
-                height: max(
-                    0,
-                    vm.effectiveClosedNotchHeight - 12
-                ),
-                alignment: .center
-            )
+            .frame(width: iconSize + (showLyrics ? lyricTrackWidth + 6 : 0), alignment: .leading)
         }
         .frame(
             height: vm.effectiveClosedNotchHeight,

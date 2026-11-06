@@ -422,42 +422,48 @@ class MusicManager: ObservableObject {
         }
 
         // LRCLIB simple search (no auth): https://lrclib.net/api/search?track_name=...&artist_name=...
-        let urlString = "https://lrclib.net/api/search?track_name=\(encodedTitle)&artist_name=\(encodedArtist)"
-        guard let url = URL(string: urlString) else {
-            self.currentLyrics = ""
-            self.isFetchingLyrics = false
-            return
-        }
-        do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                self.currentLyrics = ""
-                self.isFetchingLyrics = false
-                return
+        let searchQueries = [
+            (title: cleanTitle, artist: cleanArtist),
+            (title: cleanTitle.replacingOccurrences(of: #"\s*[\(\[（【].*?[\)\]）】]"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces),
+             artist: cleanArtist.components(separatedBy: CharacterSet(charactersIn: "/,&、")).first?.trimmingCharacters(in: .whitespaces) ?? cleanArtist)
+        ]
+
+        for query in searchQueries {
+            guard let encTitle = query.title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                  let encArtist = query.artist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                  !query.title.isEmpty,
+                  let url = URL(string: "https://lrclib.net/api/search?track_name=\(encTitle)&artist_name=\(encArtist)") else {
+                continue
             }
-            if let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-               let first = jsonArray.first {
-                // Prefer plain lyrics (syncedLyrics may also be present)
-                let plain = (first["plainLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let synced = (first["syncedLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let resolved = plain.isEmpty ? synced : plain
-                self.currentLyrics = resolved
-                self.isFetchingLyrics = false
-                if !synced.isEmpty {
-                    self.syncedLyrics = self.parseLRC(synced)
-                } else {
-                    self.syncedLyrics = []
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { continue }
+                if let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]], !jsonArray.isEmpty {
+                    // Prioritize entries with synced lyrics
+                    let match = jsonArray.first(where: {
+                        let s = ($0["syncedLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        return !s.isEmpty
+                    }) ?? jsonArray.first!
+
+                    let plain = (match["plainLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let synced = (match["syncedLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let resolved = plain.isEmpty ? synced : plain
+                    self.currentLyrics = resolved
+                    self.isFetchingLyrics = false
+                    if !synced.isEmpty {
+                        self.syncedLyrics = self.parseLRC(synced)
+                        return
+                    } else {
+                        self.syncedLyrics = []
+                    }
                 }
-            } else {
-                self.currentLyrics = ""
-                self.isFetchingLyrics = false
-                self.syncedLyrics = []
+            } catch {
+                // Try next query variant
             }
-        } catch {
-            self.currentLyrics = ""
-            self.isFetchingLyrics = false
-            self.syncedLyrics = []
         }
+        self.currentLyrics = ""
+        self.isFetchingLyrics = false
+        self.syncedLyrics = []
     }
 
     // MARK: - Synced lyrics helpers
